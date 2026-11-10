@@ -92,8 +92,8 @@
       <div data-app="didi"><label>DiDi</label><input class="money" id="fDidi" inputmode="numeric" placeholder="0"></div>
       <div data-app="cabify"><label>Cabify</label><input class="money" id="fCabify" inputmode="numeric" placeholder="0"></div>
       <div data-app="indrive"><label>inDrive</label><input class="money" id="fIndrive" inputmode="numeric" placeholder="0"></div>
-      <div data-app="part"><label>Particulares</label><input class="money" id="fPart" inputmode="numeric" placeholder="0"></div>
-      <div data-app="tips"><label>Propinas</label><input class="money" id="fTips" inputmode="numeric" placeholder="0"></div>
+      <div data-app="part"><label>Particulares (sin impuesto)</label><input class="money" id="fPart" inputmode="numeric" placeholder="0"></div>
+      <div data-app="tips"><label>Propinas (con impuesto)</label><input class="money" id="fTips" inputmode="numeric" placeholder="0"></div>
     </div>
   </div>
 
@@ -273,7 +273,8 @@
       <div><label>Precio bencina ($/litro)</label><input class="money" id="cFuel" inputmode="numeric"></div>
       <div><label>Rendimiento (km/litro)</label><input id="cKmL" inputmode="decimal"></div>
       <div><label>Retención impuesto (%)</label><input id="cTax" inputmode="decimal"></div>
-      <div class="check" style="align-self:end"><input type="checkbox" id="cTaxPart"><span>Aplicar impuesto a particulares</span></div>
+      <div class="check" style="align-self:end"><input type="checkbox" id="cTaxPart"><span>Impuesto a particulares</span></div>
+      <div class="check"><input type="checkbox" id="cTaxTips"><span>Impuesto a propinas</span></div>
     </div>
   </div>
   <div class="card">
@@ -369,7 +370,7 @@ const KEY = "jcfin_v1";
 const FUNDS = {bebe:"Bebé", parto:"Colchón parto", fondo:"Fondo auto/deuda", salidas:"Salidas"};
 const DEFAULTS = {
   cfg:{
-    fuelPrice:1550, kmPerL:16, tax:15.25, taxParticular:true,
+    fuelPrice:1550, kmPerL:16, tax:15.25, taxParticular:false, taxTips:true, taxRulesV:2,
     goalGross:80000, floorGross:51000,
     weekly:{auto:120000, hogar:77000, bebe:50000, salidas:16000, fondo:50000},
     extraParto:50,
@@ -433,6 +434,7 @@ function load(){
   try { const raw = localStorage.getItem(KEY); S = raw ? deepMerge(DEFAULTS, JSON.parse(raw)) : JSON.parse(JSON.stringify(DEFAULTS)); }
   catch(e){ S = JSON.parse(JSON.stringify(DEFAULTS)); }
   S.moves.forEach(m=>{ if (!m.who) m.who = "angel"; });
+  if ((S.cfg.taxRulesV||0) < 2){ S.cfg.taxParticular = false; S.cfg.taxTips = true; S.cfg.taxRulesV = 2; }
 }
 function save(){
   try { localStorage.setItem(KEY, JSON.stringify(S)); return true; }
@@ -447,7 +449,8 @@ function calcDay(d){
   const apps = (a.uber||0)+(a.didi||0)+(a.cabify||0)+(a.indrive||0);
   const part = a.part||0;
   const gross = apps + part;
-  const taxable = apps + (c.taxParticular ? part : 0);
+  const tips = d.tips||0;
+  const taxable = apps + (c.taxParticular ? part : 0) + (c.taxTips ? tips : 0);
   const tax = taxable * c.tax/100;
   const km = d.km||0;
   const kmL = d.kmPerL>0 ? d.kmPerL : c.kmPerL;
@@ -455,7 +458,6 @@ function calcDay(d){
   const liters = kmL>0 ? km/kmL : 0;
   const fuelEst = liters*price;
   const exp = (d.expenses||[]).reduce((s,e)=>s+(e.a||0),0);
-  const tips = d.tips||0;
   const net = gross - tax - fuelEst - exp + tips;
   return {gross, tax, fuelEst, exp, tips, net, km, hours:d.hours||0, fuelReal:d.fuelReal||0, kmL, liters, realKmL: d.kmPerL>0,
     perKm: km>0 ? gross/km : 0, perHour: d.hours>0 ? net/d.hours : 0};
@@ -644,7 +646,7 @@ function liveDay(){
     <div class="kv"><span>Bencina (${num(r.km)} km a ${String(Math.round(r.kmL*10)/10).replace(".",",")} km/l${r.realKmL?"":" de Ajustes"})</span><b class="bad">−${clp(r.fuelEst)}</b></div>
     <div class="kv"><span>Litros usados</span><b>${String(Math.round(r.liters*10)/10).replace(".",",")} l</b></div>
     <div class="kv"><span>Otros gastos</span><b class="bad">−${clp(r.exp)}</b></div>
-    <div class="kv"><span>Propinas</span><b class="ok">+${clp(r.tips)}</b></div>
+    <div class="kv"><span>Propinas (bruto)</span><b class="ok">+${clp(r.tips)}</b></div>
     <div class="kv"><span>Bruto por km</span><b>${r.km?clp(r.perKm):"—"}</b></div>
     <div class="kv"><span>Limpio por hora</span><b>${r.hours?clp(r.perHour):"—"}</b></div>`;
 }
@@ -974,7 +976,7 @@ function applyMe(){
 function fillCfg(){
   const c = S.cfg;
   $("#cFuel").value = num(c.fuelPrice); $("#cKmL").value = String(c.kmPerL).replace(".",","); $("#cTax").value = String(c.tax).replace(".",",");
-  $("#cTaxPart").checked = !!c.taxParticular;
+  $("#cTaxPart").checked = !!c.taxParticular; $("#cTaxTips").checked = !!c.taxTips;
   $("#cGoal").value = num(c.goalGross); $("#cFloor").value = num(c.floorGross);
   $("#cWAuto").value = num(c.weekly.auto); $("#cWHogar").value = num(c.weekly.hogar); $("#cWBebe").value = num(c.weekly.bebe);
   $("#cWSalidas").value = num(c.weekly.salidas); $("#cWFondo").value = num(c.weekly.fondo); $("#cXParto").value = c.extraParto;
@@ -987,7 +989,7 @@ $("#btnSaveCfg").addEventListener("click",()=>{
   c.fuelPrice = parseMoney($("#cFuel").value) || c.fuelPrice;
   c.kmPerL = parseDec($("#cKmL").value) || c.kmPerL;
   c.tax = parseDec($("#cTax").value);
-  c.taxParticular = $("#cTaxPart").checked;
+  c.taxParticular = $("#cTaxPart").checked; c.taxTips = $("#cTaxTips").checked;
   c.goalGross = parseMoney($("#cGoal").value); c.floorGross = parseMoney($("#cFloor").value);
   c.weekly = {auto:parseMoney($("#cWAuto").value), hogar:parseMoney($("#cWHogar").value), bebe:parseMoney($("#cWBebe").value), salidas:parseMoney($("#cWSalidas").value), fondo:parseMoney($("#cWFondo").value)};
   c.extraParto = Math.min(100, Math.max(0, parseMoney($("#cXParto").value)));
