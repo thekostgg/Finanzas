@@ -134,6 +134,7 @@
     <button class="pri" id="btnSaveDay">Guardar día</button>
     <button class="danger" id="btnDelDay" style="flex:0 0 auto">Borrar</button>
   </div>
+  <div class="hint" id="draftState" style="text-align:center;margin:-4px 0 12px"></div>
 
   <div class="card">
     <h2>Últimos días</h2>
@@ -411,7 +412,8 @@ const esc = s => String(s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;"
 const pad = n => String(n).padStart(2,"0");
 const toStr = d => d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
 const fromStr = s => { const [y,m,d] = s.split("-").map(Number); return new Date(y,m-1,d); };
-const today = () => toStr(new Date());
+// Día de trabajo como Uber: de 04:01 a 04:00 del día siguiente
+const today = () => { const d = new Date(); if (d.getHours()<4 || (d.getHours()===4 && d.getMinutes()===0)) d.setDate(d.getDate()-1); return toStr(d); };
 const addDays = (s,n) => { const d = fromStr(s); d.setDate(d.getDate()+n); return toStr(d); };
 const weekStart = s => { const d = fromStr(s); const wd = (d.getDay()+6)%7; d.setDate(d.getDate()-wd); return toStr(d); };
 const DOW = ["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
@@ -568,7 +570,7 @@ function renderQuickChips(){
   S.quick = S.quick||{}; const list = S.quick[ME] || (S.quick[ME]=[]);
   chipBar($("#quickChips"), "quick", list.map(n=>({k:n, label:n, removable:true})), {
     addLabel:"Ej: 💈 Barbero",
-    onPick:n=>{ expRows.push({d:n, a:0}); renderExp(); const ins = $$("#expList .exp input.money"); if (ins.length) ins[ins.length-1].focus(); },
+    onPick:n=>{ expRows.push({d:n, a:0}); renderExp(); autosaveDay(); const ins = $$("#expList .exp input.money"); if (ins.length) ins[ins.length-1].focus(); },
     onAdd:n=>{ if (!list.includes(n)) list.push(n); save(); renderQuickChips(); },
     onRemove:n=>{ S.quick[ME] = list.filter(x=>x!==n); save(); renderQuickChips(); }
   });
@@ -596,9 +598,9 @@ function renderExp(){
     const row = document.createElement("div"); row.className="exp";
     row.innerHTML = `<input placeholder="Gasto" value="${esc(e.d)}"><input class="money" inputmode="numeric" placeholder="$" value="${e.a?num(e.a):""}"><button class="sm danger">✕</button>`;
     const [di, ai, bx] = row.children;
-    di.addEventListener("input",()=>{ e.d = di.value; });
-    ai.addEventListener("input",()=>{ e.a = parseMoney(ai.value); liveDay(); });
-    bx.addEventListener("click",()=>{ expRows.splice(i,1); renderExp(); liveDay(); });
+    di.addEventListener("input",()=>{ e.d = di.value; autosaveDay(); });
+    ai.addEventListener("input",()=>{ e.a = parseMoney(ai.value); liveDay(); autosaveDay(); });
+    bx.addEventListener("click",()=>{ expRows.splice(i,1); renderExp(); liveDay(); autosaveDay(); });
     box.appendChild(row);
   });
 }
@@ -615,7 +617,7 @@ function loadDay(ds){
   setVal("#fKm",d.km); setVal("#fHours",d.hours); setVal("#fKmL",d.kmPerL); setVal("#fFuelPrice",d.fuelPrice,1);
   $("#fNote").value = d.note||"";
   expRows = (d.expenses||[]).map(e=>({...e}));
-  renderExp(); liveDay(); renderAppChips();
+  renderExp(); liveDay(); renderAppChips(); showDayState(ds);
   $("#btnDelDay").style.display = S.days[ds] ? "" : "none";
 }
 function readForm(){
@@ -631,6 +633,34 @@ function readForm(){
     note:$("#fNote").value.trim()
   };
 }
+/* --- guardado automático del día --- */
+let asT = null, loadingDay = false;
+const hasData = d => Object.values(d.apps).some(v=>v>0) || d.tips>0 || d.km>0 || d.hours>0 || d.odoIni>0 || d.odoFin>0 || d.fuelReal>0 || d.kmPerL>0 || d.fuelPrice>0 || d.note || d.expenses.length;
+function flushDay(){
+  clearTimeout(asT); asT = null;
+  const ds = $("#fDate").value || curDate;
+  const d = readForm();
+  if (!hasData(d) && !S.days[ds]) return;
+  d.closed = !!(S.days[ds] && S.days[ds].closed);
+  S.days[ds] = d;
+  if (save()){
+    const t = new Date();
+    $("#draftState").textContent = (d.closed ? "✓ Día cerrado · cambios guardados " : "⏳ Borrador guardado ")+pad(t.getHours())+":"+pad(t.getMinutes());
+    $("#btnDelDay").style.display = "";
+    renderRecent(); renderHeader();
+  }
+}
+function autosaveDay(){ if (loadingDay) return; clearTimeout(asT); asT = setTimeout(flushDay, 500); }
+let lastToday = null;
+document.addEventListener("visibilitychange",()=>{
+  if (document.visibilityState==="hidden"){ if (asT) flushDay(); return; }
+  // si pasaron las 04:00 con la app abierta, salta al nuevo día de trabajo
+  const t = today();
+  if (lastToday && t!==lastToday && curDate===lastToday){ loadDay(t); renderAll(); }
+  lastToday = t;
+});
+window.addEventListener("pagehide",()=>{ if (asT) flushDay(); });
+
 function liveDay(){
   const d = readForm(), r = calcDay(d), st = status(r.gross), c = S.cfg;
   const pct = Math.min(100, r.gross/c.goalGross*100);
@@ -650,13 +680,21 @@ function liveDay(){
     <div class="kv"><span>Bruto por km</span><b>${r.km?clp(r.perKm):"—"}</b></div>
     <div class="kv"><span>Limpio por hora</span><b>${r.hours?clp(r.perHour):"—"}</b></div>`;
 }
-["#fUber","#fDidi","#fCabify","#fIndrive","#fPart","#fTips","#fKm","#fHours","#fOdoIni","#fOdoFin","#fFuelReal","#fKmL","#fFuelPrice"].forEach(id=>$(id).addEventListener("input",liveDay));
+["#fUber","#fDidi","#fCabify","#fIndrive","#fPart","#fTips","#fKm","#fHours","#fOdoIni","#fOdoFin","#fFuelReal","#fKmL","#fFuelPrice"].forEach(id=>$(id).addEventListener("input",()=>{ liveDay(); autosaveDay(); }));
+$("#fNote").addEventListener("input", autosaveDay);
 $("#fDate").addEventListener("change",()=>{ if ($("#fDate").value) loadDay($("#fDate").value); });
 $("#btnSaveDay").addEventListener("click",()=>{
+  clearTimeout(asT); asT = null;
   const ds = $("#fDate").value || today();
-  S.days[ds] = readForm();
-  if (save()){ toast("Día guardado ✓"); loadDay(ds); renderRecent(); renderHeader(); }
+  const d = readForm(); d.closed = true;
+  S.days[ds] = d;
+  if (save()){ toast("Día cerrado ✓"); loadDay(ds); renderRecent(); renderHeader(); }
 });
+function showDayState(ds){
+  const d = S.days[ds];
+  $("#btnSaveDay").textContent = d && d.closed ? "✓ Día cerrado (guardar cambios)" : "Guardar día";
+  $("#draftState").textContent = !d ? "Se guarda solo mientras escribes" : d.closed ? "✓ Día cerrado" : "⏳ Borrador guardado · ciérralo al terminar";
+}
 let delArmed = false;
 $("#btnDelDay").addEventListener("click",()=>{
   if (!delArmed){ delArmed = true; $("#btnDelDay").textContent="¿Seguro?"; setTimeout(()=>{delArmed=false; $("#btnDelDay").textContent="Borrar";},3000); return; }
@@ -668,7 +706,7 @@ function renderRecent(){
   if (!keys.length){ $("#recentDays").innerHTML = '<div class="mut">Todavía no hay días guardados.</div>'; return; }
   $("#recentDays").innerHTML = `<table><tr><th>Día</th><th>Bruto</th><th>Limpio</th><th>$/km</th></tr>${
     keys.map(k=>{ const r=calcDay(S.days[k]), st=status(r.gross);
-      return `<tr class="click" data-d="${k}"><td>${nice(k)}</td><td class="${st.cls}">${clp(r.gross)}</td><td>${clp(r.net)}</td><td>${r.km?num(r.perKm):"—"}</td></tr>`; }).join("")
+      return `<tr class="click" data-d="${k}"><td>${S.days[k].closed?"":"⏳ "}${nice(k)}</td><td class="${st.cls}">${clp(r.gross)}</td><td>${clp(r.net)}</td><td>${r.km?num(r.perKm):"—"}</td></tr>`; }).join("")
   }</table>`;
   $$("#recentDays tr.click").forEach(tr=>tr.addEventListener("click",()=>{ loadDay(tr.dataset.d); window.scrollTo(0,0); }));
 }
@@ -1038,7 +1076,7 @@ function init(){
   applyMe(); fillCats(); refreshChips();
   fillCfg(); loadDay(today()); curWeek = weekStart(today()); renderAll();
 }
-load(); init();
+load(); init(); lastToday = today();
 })();
 </script>
 </body>
