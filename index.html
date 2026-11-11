@@ -98,6 +98,17 @@
   </div>
 
   <div class="card">
+    <h2>💵 Efectivo cobrado</h2>
+    <div class="chips" id="cashApp"></div>
+    <div class="row">
+      <input class="money" id="cashIn" inputmode="numeric" placeholder="Monto que te pagaron">
+      <button class="pri" id="btnCash" style="flex:0 0 auto">+ Sumar</button>
+    </div>
+    <div class="chips" id="cashList" style="margin-top:10px"></div>
+    <div id="cashTot" class="mut"></div>
+  </div>
+
+  <div class="card">
     <h2>Recorrido</h2>
     <div class="grid">
       <div><label>Odómetro inicio</label><input id="fOdoIni" inputmode="numeric" placeholder="opcional"></div>
@@ -461,7 +472,14 @@ function calcDay(d){
   const fuelEst = liters*price;
   const exp = (d.expenses||[]).reduce((s,e)=>s+(e.a||0),0);
   const net = gross - tax - fuelEst - exp + tips;
-  return {gross, tax, fuelEst, exp, tips, net, km, hours:d.hours||0, fuelReal:d.fuelReal||0, kmL, liters, realKmL: d.kmPerL>0,
+  const cash = (d.cash||[]).reduce((s,x)=>s+x.a,0);
+  const payout = {};
+  ["uber","didi","cabify","indrive"].forEach(k=>{
+    const base = a[k]||0, tp = k==="uber" ? tips : 0;
+    const ca = (d.cash||[]).filter(x=>x.app===k).reduce((s,x)=>s+x.a,0);
+    if (base>0 || tp>0 || ca>0) payout[k] = base + tp - (base + (c.taxTips ? tp : 0))*c.tax/100 - ca;
+  });
+  return {cash, payout, gross, tax, fuelEst, exp, tips, net, km, hours:d.hours||0, fuelReal:d.fuelReal||0, kmL, liters, realKmL: d.kmPerL>0,
     perKm: km>0 ? gross/km : 0, perHour: d.hours>0 ? net/d.hours : 0};
 }
 function status(gross){
@@ -480,7 +498,9 @@ function calcWeek(ws){
   for (let i=0;i<7;i++){
     const ds = addDays(ws,i), d = S.days[ds];
     if (d){ const r = calcDay(d); days.push({ds, r}); for (const k of ["gross","net","km","hours","fuelEst","fuelReal","tax","exp","tips","liters"]) tot[k]+=r[k]; if (r.gross>0) tot.worked++;
-      if (r.realKmL){ tot.kmReal += r.km; tot.litersReal += r.liters; } }
+      if (r.realKmL){ tot.kmReal += r.km; tot.litersReal += r.liters; }
+      tot.cash = (tot.cash||0) + r.cash; tot.payout = tot.payout||{};
+      for (const k in r.payout) tot.payout[k] = (tot.payout[k]||0) + r.payout[k]; }
   }
   const we = addDays(ws,6);
   tot.extraInc = S.ledger.filter(l=>l.type==="ingreso" && l.date>=ws && l.date<=we).reduce((s,l)=>s+l.amount,0);
@@ -589,6 +609,30 @@ function renderCatChips(){
 }
 function refreshChips(){ renderSegs(); renderAppChips(); renderQuickChips(); renderCatChips(); }
 
+/* ---------- EFECTIVO ---------- */
+let cashRows = [];
+let cashApp = "uber";
+const APPN = {uber:"Uber", didi:"DiDi", cabify:"Cabify", indrive:"inDrive"};
+function renderCash(){
+  chipBar($("#cashApp"), "cashApp", Object.keys(APPN).map(k=>({k, label:APPN[k], on:k===cashApp})), {onPick:k=>{ cashApp=k; renderCash(); }});
+  const box = $("#cashList"); box.innerHTML = "";
+  cashRows.forEach((c,i)=>{
+    const b = document.createElement("button");
+    b.innerHTML = `${APPN[c.app]||c.app} ${clp(c.a)}${c.t?` <span class="mut">${c.t}</span>`:""}<span class="x">✕</span>`;
+    b.addEventListener("click",()=>{ cashRows.splice(i,1); renderCash(); liveDay(); autosaveDay(); });
+    box.appendChild(b);
+  });
+  const tot = cashRows.reduce((s,c)=>s+c.a,0);
+  $("#cashTot").innerHTML = cashRows.length ? `En el bolsillo: <b class="ok">${clp(tot)}</b> · ${cashRows.length} viaje${cashRows.length>1?"s":""}` : "";
+}
+$("#btnCash").addEventListener("click",()=>{
+  const a = parseMoney($("#cashIn").value); if (!a){ toast("Escribe el monto"); return; }
+  const t = new Date();
+  cashRows.push({a, app:cashApp, t:pad(t.getHours())+":"+pad(t.getMinutes())});
+  $("#cashIn").value = ""; renderCash(); liveDay(); autosaveDay(); toast("+"+clp(a)+" en efectivo");
+});
+$("#cashIn").addEventListener("keydown", e=>{ if (e.key==="Enter") $("#btnCash").click(); });
+
 /* ---------- HOY ---------- */
 let curDate = today();
 let expRows = [];
@@ -617,6 +661,7 @@ function loadDay(ds){
   setVal("#fKm",d.km); setVal("#fHours",d.hours); setVal("#fKmL",d.kmPerL); setVal("#fFuelPrice",d.fuelPrice,1);
   $("#fNote").value = d.note||"";
   expRows = (d.expenses||[]).map(e=>({...e}));
+  cashRows = (d.cash||[]).map(c=>({...c})); renderCash();
   renderExp(); liveDay(); renderAppChips(); showDayState(ds);
   $("#btnDelDay").style.display = S.days[ds] ? "" : "none";
 }
@@ -630,12 +675,13 @@ function readForm(){
     odoIni:oi||0, odoFin:of||0, km, hours:parseDec($("#fHours").value),
     kmPerL:parseDec($("#fKmL").value), fuelPrice:parseMoney($("#fFuelPrice").value),
     expenses: expRows.filter(e=>e.a>0||e.d).map(e=>({d:e.d.trim(), a:e.a||0})),
-    note:$("#fNote").value.trim()
+    note:$("#fNote").value.trim(),
+    cash: cashRows.map(c=>({...c}))
   };
 }
 /* --- guardado automático del día --- */
 let asT = null, loadingDay = false;
-const hasData = d => Object.values(d.apps).some(v=>v>0) || d.tips>0 || d.km>0 || d.hours>0 || d.odoIni>0 || d.odoFin>0 || d.fuelReal>0 || d.kmPerL>0 || d.fuelPrice>0 || d.note || d.expenses.length;
+const hasData = d => Object.values(d.apps).some(v=>v>0) || d.tips>0 || d.km>0 || d.hours>0 || d.odoIni>0 || d.odoFin>0 || d.fuelReal>0 || d.kmPerL>0 || d.fuelPrice>0 || d.note || d.expenses.length || d.cash.length;
 function flushDay(){
   clearTimeout(asT); asT = null;
   const ds = $("#fDate").value || curDate;
@@ -678,7 +724,10 @@ function liveDay(){
     <div class="kv"><span>Otros gastos</span><b class="bad">−${clp(r.exp)}</b></div>
     <div class="kv"><span>Propinas (bruto)</span><b class="ok">+${clp(r.tips)}</b></div>
     <div class="kv"><span>Bruto por km</span><b>${r.km?clp(r.perKm):"—"}</b></div>
-    <div class="kv"><span>Limpio por hora</span><b>${r.hours?clp(r.perHour):"—"}</b></div>`;
+    <div class="kv"><span>Limpio por hora</span><b>${r.hours?clp(r.perHour):"—"}</b></div>
+    ${r.cash>0 || Object.keys(r.payout).length ? `<div class="mut" style="font-size:12px;margin-top:10px">Dónde está tu plata</div>
+      <div class="kv"><span>💵 Efectivo en el bolsillo</span><b class="ok">${clp(r.cash)}</b></div>
+      ${Object.entries(r.payout).map(([k,v])=>`<div class="kv"><span>${APPN[k]} te debería transferir</span><b class="${v<0?"bad":""}">${clp(v)}</b></div>`).join("")}` : ""}`;
 }
 ["#fUber","#fDidi","#fCabify","#fIndrive","#fPart","#fTips","#fKm","#fHours","#fOdoIni","#fOdoFin","#fFuelReal","#fKmL","#fFuelPrice"].forEach(id=>$(id).addEventListener("input",()=>{ liveDay(); autosaveDay(); }));
 $("#fNote").addEventListener("input", autosaveDay);
@@ -728,6 +777,8 @@ function renderWeek(){
     <div class="hint" style="margin-bottom:8px">${diff>=0 ? "Plan cubierto (+"+clp(diff)+" de extra)" : "Te faltan "+clp(-diff)+" limpios para cubrir el plan de "+clp(W.planTotal)}</div>
     ${t.extraInc>0?`<div class="kv"><span>Limpio de manejar</span><b>${clp(t.drive)}</b></div><div class="kv"><span>Ingresos extra (Gastos)</span><b class="ok">+${clp(t.extraInc)}</b></div>`:""}
     <div class="kv"><span>Días trabajados</span><b>${t.worked}</b></div>
+    ${t.cash>0?`<div class="kv"><span>💵 Efectivo cobrado</span><b class="ok">${clp(t.cash)}</b></div>`:""}
+    ${Object.entries(t.payout||{}).map(([k,v])=>`<div class="kv"><span>${APPN[k]} debería transferir</span><b>${clp(v)}</b></div>`).join("")}
     <div class="kv"><span>Bruto</span><b>${clp(t.gross)}</b></div>
     <div class="kv"><span>Km</span><b>${num(t.km)}</b></div>
     <div class="kv"><span>Horas</span><b>${String(Math.round(t.hours*10)/10).replace(".",",")}</b></div>
